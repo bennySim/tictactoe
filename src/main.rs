@@ -18,7 +18,7 @@ use crate::tictactoe::TicTacToe;
 pub mod tictactoe;
 
 static TOPIC: Lazy<Topic> = Lazy::new(|| Topic::new("TicTacToe"));
-static USER_KEY : Lazy<identity::Keypair> = Lazy::new(|| identity::Keypair::generate_ed25519());
+static USER_KEY : Lazy<identity::Keypair> = Lazy::new(identity::Keypair::generate_ed25519);
 static USER_PEER_ID : Lazy<PeerId> = Lazy::new(|| PeerId::from(USER_KEY.public()));
 
 struct GameSession {
@@ -99,7 +99,7 @@ impl NetworkBehaviourEventProcess<FloodsubEvent> for TicTacToeBehaviour {
 fn turn_opponent_spawn(sender: mpsc::UnboundedSender<GameStatus>, opponent_turn : MyTurn) {
     tokio::spawn(async move {
         let resp = GameStatus::Turn(opponent_turn.x, opponent_turn.y);
-        if let Err(_) = sender.send(resp) {
+        if sender.send(resp).is_err() {
             println!("Error while sending message");
         }
     });
@@ -108,7 +108,7 @@ fn turn_opponent_spawn(sender: mpsc::UnboundedSender<GameStatus>, opponent_turn 
 fn process_request_spawn(sender: mpsc::UnboundedSender<GameStatus>, msg_source : String) {
         tokio::spawn(async move {
             let resp = GameStatus::Init(msg_source);
-            if let Err(_) = sender.send(resp) {
+            if sender.send(resp).is_err() {
                 println!("Error while sending message");
             }
         });
@@ -116,7 +116,7 @@ fn process_request_spawn(sender: mpsc::UnboundedSender<GameStatus>, msg_source :
 
 fn start_game_spawn(sender: mpsc::UnboundedSender<GameStatus>) {
     tokio::spawn( async move {
-        if let Err(_) = sender.send(GameStatus::Start) {
+        if sender.send(GameStatus::Start).is_err() {
             println!("Error while sending message");
         }
     });
