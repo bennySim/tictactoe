@@ -6,28 +6,39 @@ use libp2p::{
     swarm::{NetworkBehaviourEventProcess, Swarm, SwarmBuilder},
     NetworkBehaviour, PeerId,
 };
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use tictactoe::GameError;
+use tictactoe::{GameError, TicTacToe};
 use tokio::{io::AsyncBufReadExt, sync::mpsc};
 use itertools::Itertools;
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
-use crate::tictactoe::TicTacToe;
-
 pub mod tictactoe;
 
-static TOPIC: Lazy<Topic> = Lazy::new(|| Topic::new("TicTacToe"));
-static USER_KEY : Lazy<identity::Keypair> = Lazy::new(identity::Keypair::generate_ed25519);
-static USER_PEER_ID : Lazy<PeerId> = Lazy::new(|| PeerId::from(USER_KEY.public()));
-
 type Coordinates = (usize, usize);
+
+struct NetworkCommunication {
+    user_key : identity::Keypair,
+    user_peer_id : PeerId,
+    game_session : GameSession,
+}
+
+impl NetworkCommunication {
+    fn new() -> NetworkCommunication {
+        let key = identity::Keypair::generate_ed25519();
+        NetworkCommunication { 
+            user_key: key.clone(),
+            user_peer_id: PeerId::from(key.public()),
+            game_session: GameSession::new(),
+         }
+    }
+}
 
 struct GameSession {
     opponent_id : String,
     game : TicTacToe, 
     initiated : bool,
+    topic : Topic,
 }
 
 impl GameSession {
@@ -36,6 +47,7 @@ impl GameSession {
             opponent_id : String::new(),
             game : TicTacToe::new(),
             initiated : false,
+            topic: Topic::new("TicTacToe"),
         }
     }
 
@@ -196,26 +208,27 @@ fn print_table(grid : [[char; 3]; 3]) {
 
 #[tokio::main]
 async fn main() {
-    println!("Your peer id: {:?}", USER_PEER_ID.clone());
+    let mut communication = NetworkCommunication::new();
+    println!("Your peer id: {:?}", communication.user_peer_id);
     print_help();
 
     let (response_sender, mut response_rcv) = mpsc::unbounded_channel();
 
-    let transport = libp2p::development_transport(USER_KEY.clone()).await.expect("transport create failed");
+    let transport = libp2p::development_transport(communication.user_key.clone()).await.expect("transport create failed");
 
     let mut behaviour = TicTacToeBehaviour {
-        floodsub: Floodsub::new(USER_PEER_ID.clone()),
+        floodsub: Floodsub::new(communication.user_peer_id),
         mdns: Mdns::new(Default::default())
         .await
         .expect("can create mdns"),
         response_sender,
     };
 
-    behaviour.floodsub.subscribe(TOPIC.clone());
+    behaviour.floodsub.subscribe(communication.game_session.topic.clone());
 
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
 
-    let mut swarm = SwarmBuilder::new(transport, behaviour, USER_PEER_ID.clone())
+    let mut swarm = SwarmBuilder::new(transport, behaviour, communication.user_peer_id)
     .executor(Box::new(|fut| {
         tokio::spawn(fut);
     }))
@@ -225,7 +238,6 @@ async fn main() {
     swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse().expect("can get a local socket"),)
     .expect("swarm can be started");
 
-    let mut game_session = GameSession::new();
     loop {
 
         let evt = {
@@ -242,17 +254,17 @@ async fn main() {
 
         if let Some(event) = evt {
             match event {
-                EventType::GameResponse(game_status) => resolve_spawned_messages(game_status, &mut game_session),
+                EventType::GameResponse(game_status) => resolve_spawned_messages(game_status, &mut communication.game_session, &communication.user_peer_id.to_string()),
                 EventType::Input(line) => match line.as_str() {
                     cmd if cmd.starts_with(Commands::Help.to_string()) => print_help(),
                     cmd if cmd.starts_with(Commands::Peers.to_string())  => list_peers(&mut swarm).await,
-                    cmd if cmd.starts_with(Commands::Turn.to_string())  => make_turn(&mut swarm, cmd, &mut game_session).await, 
-                    cmd if cmd.starts_with(Commands::Start.to_string()) => initiate_game(&mut swarm, cmd, &mut game_session).await,
+                    cmd if cmd.starts_with(Commands::Turn.to_string())  => make_turn(&mut swarm, cmd, &mut communication.game_session).await, 
+                    cmd if cmd.starts_with(Commands::Start.to_string()) => initiate_game(&mut swarm, cmd, &mut communication.game_session).await,
                     cmd if cmd == "y" || cmd == "yes" => {
-                        send_answer(&mut swarm, &game_session, true);
+                        send_answer(&mut swarm, &communication.game_session, true);
                         println!("Waiting for opponent turn.");
                     }
-                    cmd if cmd == "n" || cmd == "no" => send_answer(&mut swarm, &game_session, false),
+                    cmd if cmd == "n" || cmd == "no" => send_answer(&mut swarm, &communication.game_session, false),
                     _ => {
                         println!("Unknown command");
                         print_help();
@@ -264,10 +276,10 @@ async fn main() {
     
 }
 
-fn resolve_spawned_messages(game_status : GameStatus, game_session : &mut GameSession) {
+fn resolve_spawned_messages(game_status : GameStatus, game_session : &mut GameSession, user_peer_id : &str) {
     match game_status {
         GameStatus::Init(initiator_id) => {
-            if initiator_id == USER_PEER_ID.to_string() {
+            if initiator_id == user_peer_id {
                 print!("<{}>: ", initiator_id);
                 println!("Do you want to play TicTacToe with me? y[es] or n[o] ?");
                 game_session.initiate(initiator_id);
@@ -300,7 +312,7 @@ fn send_answer(swarm: &mut Swarm<TicTacToeBehaviour>, game_session : &GameSessio
     if game_session.initiated {
              let answer = Answer { accept: answer};
              let json = serde_json::to_string(&answer).expect("cannot jsonify request");
-             swarm.behaviour_mut().floodsub.publish(TOPIC.clone(), json.as_bytes());
+             swarm.behaviour_mut().floodsub.publish(game_session.topic.clone(), json.as_bytes());
     } else {
      println!("Unknown command");
     }
@@ -322,7 +334,7 @@ async fn initiate_game(swarm: &mut Swarm<TicTacToeBehaviour>, line: &str, game_s
             };
             game_session.initiate(receiver_peer_id);
             let json = serde_json::to_string(&req).expect("cannot jsonify request");
-            swarm.behaviour_mut().floodsub.publish(TOPIC.clone(), json.as_bytes());
+            swarm.behaviour_mut().floodsub.publish(game_session.topic.clone(), json.as_bytes());
         }
         None => {// TODO invalid input
     }
@@ -358,7 +370,7 @@ async fn make_one_turn(swarm: &mut Swarm<TicTacToeBehaviour>, game_session : &mu
         
             let turn = MyTurn {x, y};
             let json = serde_json::to_string(&turn).expect("cannot jsonify request");
-            swarm.behaviour_mut().floodsub.publish(TOPIC.clone(), json.as_bytes());
+            swarm.behaviour_mut().floodsub.publish(game_session.topic.clone(), json.as_bytes());
         },
     
         Err(GameError::OccupiedField) => println!("Field is already occupied, choose different one!"),
