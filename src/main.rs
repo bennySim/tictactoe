@@ -37,8 +37,8 @@ impl NetworkCommunication {
 struct GameSession {
     opponent_id : String,
     game : TicTacToe, 
-    initiated : bool,
     topic : Topic,
+    your_turn : Option<bool>,
 }
 
 impl GameSession {
@@ -46,20 +46,37 @@ impl GameSession {
         GameSession {
             opponent_id : String::new(),
             game : TicTacToe::new(),
-            initiated : false,
             topic: Topic::new("TicTacToe"),
+            your_turn : None,
         }
     }
 
-    fn initiate(&mut self, opp_id: String) {
+    fn initiate(&mut self, opp_id: String, your_turn : bool) {
         self.opponent_id = opp_id;
-        self.initiated = true;
+        self.your_turn = Some(your_turn);
+    }
+
+    fn is_initiated(&self) -> bool {
+        self.your_turn.is_some()
     }
 
     fn reset(&mut self) {
         self.game.reset();
-        self.initiated = false;
         self.opponent_id = String::new();
+    }
+
+    fn is_your_turn(&self) -> bool {
+        self.your_turn.is_some() && self.your_turn.unwrap()
+    }
+
+    fn make_opponent_turn(&mut self, x: usize, y: usize) {
+        self.game.make_opponent_turn(x, y);
+        self.your_turn = Some(true);
+    }
+
+    fn make_my_turn(&mut self, x: usize, y: usize) -> Result<(), GameError> {
+        self.your_turn = Some(false);
+        self.game.make_my_turn(x, y)
     }
 }
 
@@ -282,7 +299,7 @@ fn resolve_spawned_messages(game_status : GameStatus, game_session : &mut GameSe
             if initiator_id == user_peer_id {
                 print!("<{}>: ", initiator_id);
                 println!("Do you want to play TicTacToe with me? y[es] or n[o] ?");
-                game_session.initiate(initiator_id);
+                game_session.initiate(initiator_id, false);
             }
         },
         GameStatus::Start => {
@@ -294,7 +311,7 @@ fn resolve_spawned_messages(game_status : GameStatus, game_session : &mut GameSe
 }
 
 fn resolve_opponent_turn(x : usize, y: usize, game_session : &mut GameSession) {
-    game_session.game.make_opponent_turn(x, y);
+    game_session.make_opponent_turn(x, y);
     print_table(game_session.game.get_state());
 
     if game_session.game.is_opponent_winner() {
@@ -309,7 +326,7 @@ struct Answer {
 }
 
 fn send_answer(swarm: &mut Swarm<TicTacToeBehaviour>, game_session : &GameSession, answer : bool) {
-    if game_session.initiated {
+    if game_session.is_initiated() {
              let answer = Answer { accept: answer};
              let json = serde_json::to_string(&answer).expect("cannot jsonify request");
              swarm.behaviour_mut().floodsub.publish(game_session.topic.clone(), json.as_bytes());
@@ -332,7 +349,7 @@ async fn initiate_game(swarm: &mut Swarm<TicTacToeBehaviour>, line: &str, game_s
             let req = Request {
                 sender: receiver_peer_id.clone(),
             };
-            game_session.initiate(receiver_peer_id);
+            game_session.initiate(receiver_peer_id, true);
             let json = serde_json::to_string(&req).expect("cannot jsonify request");
             swarm.behaviour_mut().floodsub.publish(game_session.topic.clone(), json.as_bytes());
         }
@@ -348,14 +365,19 @@ struct MyTurn {
 }
 
 async fn make_turn(swarm: &mut Swarm<TicTacToeBehaviour>, line: &str, game_session : &mut GameSession) {
+    if game_session.is_your_turn() {
+
     match process_coords(line) {
         Some((x, y)) => make_one_turn(swarm, game_session, x, y).await,
         None => println!("Play again!"),
     };
+ } else {
+    println!("It is not your turn, waiting for opponent!");
+ }
 }
 
 async fn make_one_turn(swarm: &mut Swarm<TicTacToeBehaviour>, game_session : &mut GameSession, x: usize, y: usize) {
-    match game_session.game.make_my_turn(x, y) {
+    match game_session.make_my_turn(x, y) {
     
         Ok(()) => {
             print_table(game_session.game.get_state());
