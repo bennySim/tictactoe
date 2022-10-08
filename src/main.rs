@@ -114,46 +114,28 @@ impl NetworkBehaviourEventProcess<FloodsubEvent> for TicTacToeBehaviour {
     fn inject_event(&mut self, event: FloodsubEvent) {
         if let FloodsubEvent::Message(msg) = event {
             if let Ok(resp) = serde_json::from_slice::<Request>(&msg.data) {
-               process_request_spawn(self.response_sender.clone(), resp.sender);
+               spawn_internally(self.response_sender.clone(), GameStatus::Init(resp.sender));
             }
 
             if let Ok(resp) = serde_json::from_slice::<Answer>(&msg.data) {
                 if resp.accept {
                     println!("yes");
-                    start_game_spawn(self.response_sender.clone());
+                    spawn_internally(self.response_sender.clone(), GameStatus::Start);
                 } else {
                     println!("no");
                 }
             }
 
             if let Ok(opponent_turn) = serde_json::from_slice::<MyTurn>(&msg.data) {
-                turn_opponent_spawn(self.response_sender.clone(), opponent_turn);
+                spawn_internally(self.response_sender.clone(), GameStatus::Turn(opponent_turn.x, opponent_turn.y));
             }
         }
     }
 }
 
-fn turn_opponent_spawn(sender: mpsc::UnboundedSender<GameStatus>, opponent_turn : MyTurn) {
+fn spawn_internally(sender: mpsc::UnboundedSender<GameStatus>, game_status : GameStatus) {
     tokio::spawn(async move {
-        let resp = GameStatus::Turn(opponent_turn.x, opponent_turn.y);
-        if sender.send(resp).is_err() {
-            println!("Error while sending message");
-        }
-    });
-}
-
-fn process_request_spawn(sender: mpsc::UnboundedSender<GameStatus>, msg_source : String) {
-        tokio::spawn(async move {
-            let resp = GameStatus::Init(msg_source);
-            if sender.send(resp).is_err() {
-                println!("Error while sending message");
-            }
-        });
-}
-
-fn start_game_spawn(sender: mpsc::UnboundedSender<GameStatus>) {
-    tokio::spawn( async move {
-        if sender.send(GameStatus::Start).is_err() {
+        if sender.send(game_status).is_err() {
             println!("Error while sending message");
         }
     });
