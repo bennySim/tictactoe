@@ -8,6 +8,7 @@ use libp2p::{
 };
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
+use tictactoe::GameError;
 use tokio::{io::AsyncBufReadExt, sync::mpsc};
 use itertools::Itertools;
 use strum::IntoEnumIterator;
@@ -20,6 +21,8 @@ pub mod tictactoe;
 static TOPIC: Lazy<Topic> = Lazy::new(|| Topic::new("TicTacToe"));
 static USER_KEY : Lazy<identity::Keypair> = Lazy::new(identity::Keypair::generate_ed25519);
 static USER_PEER_ID : Lazy<PeerId> = Lazy::new(|| PeerId::from(USER_KEY.public()));
+
+type Coordinates = (usize, usize);
 
 struct GameSession {
     opponent_id : String,
@@ -63,6 +66,11 @@ enum GameStatus {
 enum EventType {
     GameResponse(GameStatus),
     Input(String),
+}
+
+enum CoordinatesError {
+    InvalidFormat,
+    InvalidValue,
 }
 
 #[derive(NetworkBehaviour)]
@@ -328,34 +336,85 @@ struct MyTurn {
 }
 
 async fn make_turn(swarm: &mut Swarm<TicTacToeBehaviour>, line: &str, game_session : &mut GameSession) {
-    let rest = line.strip_prefix("turn ");
-    let coords : Vec<&str> = rest.unwrap().split_whitespace().collect();
-    let x = coords[0].parse::<char>().unwrap();
-    let y = coords[1].parse::<u8>().unwrap();
-    let (x, y) = convert_coords(x, y);
-    game_session.game.make_my_turn(x, y);
-    print_table(game_session.game.get_state());
-
-    if game_session.game.am_i_winner() {
-        println!("Congrats, you win!");
-        game_session.reset();
-    } else {
-        println!("Waiting for opponent turn");
-    }
-    let turn = MyTurn {x, y};
-    let json = serde_json::to_string(&turn).expect("cannot jsonify request");
-    swarm.behaviour_mut().floodsub.publish(TOPIC.clone(), json.as_bytes());
+    match process_coords(line) {
+        Some((x, y)) => make_one_turn(swarm, game_session, x, y).await,
+        None => println!("Play again!"),
+    };
 }
 
-fn convert_coords(x: char, y: u8) -> (usize, usize) {
-    let x = match x {
-        'A' => 0,
-        'B' => 1,
-        'C' => 2,
-        _ => 100, // TODO solve when error handling 
+async fn make_one_turn(swarm: &mut Swarm<TicTacToeBehaviour>, game_session : &mut GameSession, x: usize, y: usize) {
+    match game_session.game.make_my_turn(x, y) {
+    
+        Ok(()) => {
+            print_table(game_session.game.get_state());
+        
+            if game_session.game.am_i_winner() {
+                println!("Congrats, you win!");
+                game_session.reset();
+        
+            } else {
+                println!("Waiting for opponent turn");
+            }
+        
+            let turn = MyTurn {x, y};
+            let json = serde_json::to_string(&turn).expect("cannot jsonify request");
+            swarm.behaviour_mut().floodsub.publish(TOPIC.clone(), json.as_bytes());
+        },
+    
+        Err(GameError::OccupiedField) => println!("Field is already occupied, choose different one!"),
+        Err(GameError::InvalidValue) => println!("Invalid coordinates, use values in format 'turn <A|B|C> <1|2|3>'"),
+    }
+}
+
+fn parse_coords(line: &str) -> Result<Coordinates, CoordinatesError> {
+    let rest = line.strip_prefix("turn ");
+    let coords : Vec<&str> = rest.unwrap().split_whitespace().collect();
+
+    if coords.len() != 2 {
+        return Err(CoordinatesError::InvalidFormat);
+    }
+    
+    let x = coords[0].parse::<char>();
+    let y = coords[1].parse::<u8>();
+    
+    if x.is_err() || y.is_err() {
+        return Err(CoordinatesError::InvalidFormat);
+    }
+
+    match convert_coords(x.unwrap(), y.unwrap()) {
+        Some(coords) => Ok(coords),
+        None => Err(CoordinatesError::InvalidValue),
+    }
+}
+
+fn process_coords(line: &str) -> Option<Coordinates> {
+    match parse_coords(line) {
+        Ok(coords) => Some(coords),
+        Err(CoordinatesError::InvalidFormat) => { 
+            println!("Invalid format, use format 'turn <A|B|C> <1|2|3>'");
+            None
+        },
+        Err(CoordinatesError::InvalidValue) => {
+            println!("Invalid range, use values in format 'turn <A|B|C> <1|2|3>'");
+            None
+        },
+    }
+    
+}
+
+fn convert_coords(x: char, y: u8) -> Option<Coordinates> {
+    let x= match x {
+        'A' => Some(0),
+        'B' => Some(1),
+        'C' => Some(2),
+        _ => None,
     };
 
-    (x, (y-1) as usize)
+    if x.is_none() || !(1..=3).contains(&y)  {
+        None
+    } else {
+        Some((x.unwrap(), (y-1) as usize))
+    }
 }
 
 async fn get_peers(swarm: &mut Swarm<TicTacToeBehaviour>) -> Vec<&PeerId> {
