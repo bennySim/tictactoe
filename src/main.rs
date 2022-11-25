@@ -393,13 +393,9 @@ fn parse_coords(line: &str) -> Result<Coordinates, CoordinatesError> {
     let x = coords[0].parse::<char>();
     let y = coords[1].parse::<u8>();
     
-    if x.is_err() || y.is_err() {
-        return Err(CoordinatesError::InvalidFormat);
-    }
-
-    match convert_coords(x.unwrap(), y.unwrap()) {
-        Some(coords) => Ok(coords),
-        None => Err(CoordinatesError::InvalidValue),
+    match (x, y) {
+        (Ok(x), Ok(y)) => convert_coords(x, y).ok_or(CoordinatesError::InvalidValue),
+        (_, _) => Err(CoordinatesError::InvalidFormat)
     }
 }
 
