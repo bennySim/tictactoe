@@ -66,7 +66,7 @@ impl GameSession {
     }
 
     fn is_your_turn(&self) -> bool {
-        self.your_turn.is_some() && self.your_turn.unwrap()
+        self.your_turn.unwrap_or(false)
     }
 
     fn make_opponent_turn(&mut self, x: usize, y: usize) {
