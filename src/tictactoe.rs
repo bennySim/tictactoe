@@ -130,14 +130,14 @@ impl TicTacToe {
     }
 
     fn get_diagonal(&mut self, x: usize, y:usize) -> Option<[Tile; 3]> {
-        match TicTacToe::is_corner(x, y) {
+        match TicTacToe::get_diagonal_type(x, y) {
             Some(Diagonal::Direct) => Some([0, 1, 2].map(|index| self.state[index][index])),
             Some(Diagonal::Undirect) => Some([(0, 2) ,(1, 1), (2, 0)].map(|(row, col)| self.state[row][col])),
             None => None,
         }
     }
 
-    fn is_corner(x: usize, y: usize) -> Option<Diagonal> {
+    fn get_diagonal_type(x: usize, y: usize) -> Option<Diagonal> {
         match (x, y) {
             (0, 0) | (2, 2) => Some(Diagonal::Direct),
             (2, 0) | (0, 2) => Some(Diagonal::Undirect),
