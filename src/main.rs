@@ -391,7 +391,7 @@ fn parse_coords(line: &str) -> Result<Coordinates, CoordinatesError> {
     }
     
     let x = coords[0].parse::<char>();
-    let y = coords[1].parse::<u8>();
+    let y = coords[1].parse::<usize>();
     
     match (x, y) {
         (Ok(x), Ok(y)) => convert_coords(x, y).ok_or(CoordinatesError::InvalidValue),
@@ -414,7 +414,7 @@ fn process_coords(line: &str) -> Option<Coordinates> {
     
 }
 
-fn convert_coords(x: char, y: u8) -> Option<Coordinates> {
+fn convert_coords(x: char, y: usize) -> Option<Coordinates> {
     let x= match x {
         'A' => Some(0),
         'B' => Some(1),
@@ -425,7 +425,7 @@ fn convert_coords(x: char, y: u8) -> Option<Coordinates> {
     if x.is_none() || !(1..=3).contains(&y)  {
         None
     } else {
-        Some((x.unwrap(), (y-1) as usize))
+        Some((x.unwrap(), y-1))
     }
 }
 
