@@ -419,13 +419,13 @@ fn convert_coords(x: char, y: usize) -> Option<Coordinates> {
         'A' => Some(0),
         'B' => Some(1),
         'C' => Some(2),
-        _ => None,
+        _ => return None,
     };
 
-    if x.is_none() || !(1..=3).contains(&y)  {
-        None
-    } else {
+    if (1..=3).contains(&y)  {
         Some((x.unwrap(), y-1))
+    } else {
+        None
     }
 }
 
