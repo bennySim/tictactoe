@@ -11,3 +11,7 @@ serde_json = "1.0"
 itertools = "0.10.5"
 strum = "0.24"
 strum_macros = "0.24"
+quickcheck = "1"
+
+[dev-dependencies]
+quickcheck = "1"
