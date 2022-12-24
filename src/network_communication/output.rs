@@ -6,6 +6,8 @@ pub trait PrintToOutput {
 
     fn print_help();
 
+    fn print_string(text : &str);
+
     fn process_coords(line: &str) -> Option<Coordinates>;
 }
 
@@ -19,6 +21,10 @@ impl PrintToOutput for PrintToOutputStdio {
         println!("B {} | {} | {}", grid[1][0], grid[1][1], grid[1][2]);
         println!("  ---------");
         println!("C {} | {} | {}", grid[2][0], grid[2][1], grid[2][2]);
+    }
+
+    fn print_string(text: &str) {
+        println!("{}", text);
     }
 
     fn print_help() {
