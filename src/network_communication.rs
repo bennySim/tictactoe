@@ -1,6 +1,9 @@
 pub mod output;
 pub mod tictactoe;
 
+use crate::PrintToOutputStdio;
+use crate::network_communication::output::PrintToOutput;
+
 use libp2p::{
     floodsub::{Floodsub, FloodsubEvent, Topic},
     futures::StreamExt,
@@ -10,9 +13,6 @@ use libp2p::{
     NetworkBehaviour, PeerId,
 };
 
-use serde::{Deserialize, Serialize};
-use tictactoe::{GameError, TicTacToe};
-use output::{Commands, PrintToOutput, PrintToOutputStdio};
 use tokio::{io::AsyncBufReadExt, sync::mpsc};
 use itertools::Itertools;
 
@@ -31,10 +31,10 @@ impl NetworkCommunication {
             game_session: GameSession::new(),
          }
     }
-    pub async fn start<T: PrintToOutput>(&self) {
+    pub async fn start<Output: output::PrintToOutput>(&self) {
         let mut communication = NetworkCommunication::new();
         println!("Your peer id: {:?}", communication.user_peer_id);
-        T::print_help();
+        Output::print_help();
     
         let (response_sender, mut response_rcv) = mpsc::unbounded_channel();
     
@@ -78,12 +78,12 @@ impl NetworkCommunication {
     
             if let Some(event) = evt {
                 match event {
-                    EventType::GameResponse(game_status) => resolve_spawned_messages::<T>(game_status, &mut communication.game_session, &communication.user_peer_id.to_string()),
+                    EventType::GameResponse(game_status) => resolve_spawned_messages::<Output>(game_status, &mut communication.game_session, &communication.user_peer_id.to_string()),
                     EventType::Input(line) => match line.as_str() {
-                        cmd if cmd.starts_with(Commands::Help.to_string()) => T::print_help(),
-                        cmd if cmd.starts_with(Commands::Peers.to_string())  => list_peers(&mut swarm).await,
-                        cmd if cmd.starts_with(Commands::Turn.to_string())  => make_turn::<T>(&mut swarm, cmd, &mut communication.game_session).await, 
-                        cmd if cmd.starts_with(Commands::Start.to_string()) => initiate_game(&mut swarm, cmd, &mut communication.game_session).await,
+                        cmd if cmd.starts_with(output::Commands::Help.to_string()) => Output::print_help(),
+                        cmd if cmd.starts_with(output::Commands::Peers.to_string())  => list_peers(&mut swarm).await,
+                        cmd if cmd.starts_with(output::Commands::Turn.to_string())  => make_turn::<Output>(&mut swarm, cmd, &mut communication.game_session).await, 
+                        cmd if cmd.starts_with(output::Commands::Start.to_string()) => initiate_game(&mut swarm, cmd, &mut communication.game_session).await,
                         cmd if cmd == "y" || cmd == "yes" => {
                             send_answer(&mut swarm, &communication.game_session, true);
                             println!("Waiting for opponent turn.");
@@ -91,7 +91,7 @@ impl NetworkCommunication {
                         cmd if cmd == "n" || cmd == "no" => send_answer(&mut swarm, &communication.game_session, false),
                         _ => {
                             println!("Unknown command");
-                            T::print_help();
+                            Output::print_help();
                         }
                     },
                 }
@@ -103,7 +103,7 @@ impl NetworkCommunication {
 
 struct GameSession {
     opponent_id : String,
-    game : TicTacToe, 
+    game : tictactoe::TicTacToe, 
     topic : Topic,
     your_turn : Option<bool>,
 }
@@ -112,7 +112,7 @@ impl GameSession {
     fn new() -> GameSession {
         GameSession {
             opponent_id : String::new(),
-            game : TicTacToe::new(),
+            game : tictactoe::TicTacToe::new(),
             topic: Topic::new("TicTacToe"),
             your_turn : None,
         }
@@ -141,13 +141,13 @@ impl GameSession {
         self.your_turn = Some(true);
     }
 
-    fn make_my_turn(&mut self, x: usize, y: usize) -> Result<(), GameError> {
+    fn make_my_turn(&mut self, x: usize, y: usize) -> Result<(), tictactoe::GameError> {
         self.your_turn = Some(false);
         self.game.make_my_turn(x, y)
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct Request {
     sender: String,
 }
@@ -237,7 +237,7 @@ async fn list_peers(swarm: &mut Swarm<TicTacToeBehaviour>) {
     .for_each(|(i, el)| println!("{}: {}", i, el));
 }
 
-fn resolve_spawned_messages<T : PrintToOutput>(game_status : GameStatus, game_session : &mut GameSession, user_peer_id : &str) {
+fn resolve_spawned_messages<T : output::PrintToOutput>(game_status : GameStatus, game_session : &mut GameSession, user_peer_id : &str) {
     match game_status {
         GameStatus::Init(initiator_id) => {
             if initiator_id == user_peer_id {
@@ -254,7 +254,7 @@ fn resolve_spawned_messages<T : PrintToOutput>(game_status : GameStatus, game_se
        };
 }
 
-fn resolve_opponent_turn<T : PrintToOutput>(x : usize, y: usize, game_session : &mut GameSession) {
+fn resolve_opponent_turn<T : output::PrintToOutput>(x : usize, y: usize, game_session : &mut GameSession) {
     game_session.make_opponent_turn(x, y);
     T::print_table(game_session.game.get_state());
 
@@ -264,7 +264,7 @@ fn resolve_opponent_turn<T : PrintToOutput>(x : usize, y: usize, game_session : 
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct Answer {
     accept: bool,
 }
@@ -302,13 +302,13 @@ async fn initiate_game(swarm: &mut Swarm<TicTacToeBehaviour>, line: &str, game_s
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct MyTurn {
     x: usize,
     y: usize,
 }
 
-async fn make_turn<T: PrintToOutput>(swarm: &mut Swarm<TicTacToeBehaviour>, line: &str, game_session : &mut GameSession) {
+async fn make_turn<T: output::PrintToOutput>(swarm: &mut Swarm<TicTacToeBehaviour>, line: &str, game_session : &mut GameSession) {
     if game_session.is_your_turn() {
 
     match T::process_coords(line) {
@@ -339,7 +339,7 @@ async fn make_one_turn(swarm: &mut Swarm<TicTacToeBehaviour>, game_session : &mu
             swarm.behaviour_mut().floodsub.publish(game_session.topic.clone(), json.as_bytes());
         },
     
-        Err(GameError::OccupiedField) => println!("Field is already occupied, choose different one!"),
-        Err(GameError::InvalidValue) => println!("Invalid coordinates, use values in format 'turn <A|B|C> <1|2|3>'"),
+        Err(tictactoe::GameError::OccupiedField) => println!("Field is already occupied, choose different one!"),
+        Err(tictactoe::GameError::InvalidValue) => println!("Invalid coordinates, use values in format 'turn <A|B|C> <1|2|3>'"),
     }
 }
