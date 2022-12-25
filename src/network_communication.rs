@@ -37,31 +37,19 @@ pub async fn start<Output: output::PrintToOutput>() {
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
 
     loop {
-        let evt = {
-            tokio::select! {
-                // command line message
-                line = stdin.next_line() => Some(EventType::Input(line.expect("can get line").expect("can read line from stdin"))),
-                // spawned message from internal process
-                response = response_rcv.recv() => Some(EventType::GameResponse(response.expect("response exists"))),
-                _ = swarm.select_next_some() => {
-                    None
-                },
-            }
+        tokio::select! {
+            // command line message
+            line = stdin.next_line() => process_intput::<Output>(line, &mut swarm, &mut user_session).await,
+            // spawned message from internal process
+            response = response_rcv.recv() => resolve_spawned_messages::<Output>(response, &mut user_session.game_session, &user_session.user_peer_id.to_string()),
+            _ = swarm.select_next_some() => {},
         };
-
-        if let Some(event) = evt {
-            match event {
-                EventType::GameResponse(game_status) => 
-                resolve_spawned_messages::<Output>(game_status, &mut user_session.game_session,
-                    &user_session.user_peer_id.to_string()),
-                EventType::Input(line) => process_intput::<Output>(&line, &mut swarm, &mut user_session).await,
-            }
-        }
     }
 }
 
-async fn process_intput<Output : output::PrintToOutput>(line: &str, swarm : &mut libp2p::swarm::Swarm<TicTacToeBehaviour>, user_session : &mut UserSession) {
-    match line {
+async fn process_intput<Output : output::PrintToOutput>(line: tokio::io::Result<Option<String>>, swarm : &mut libp2p::swarm::Swarm<TicTacToeBehaviour>, user_session : &mut UserSession) {
+    let line = line.expect("can get line").expect("can read line from stdin");
+    match line.as_str() {
         cmd if cmd.starts_with(output::Commands::Help.to_string()) => { Output::print_help() }
         cmd if cmd.starts_with(output::Commands::Peers.to_string()) => { list_peers::<Output>(swarm).await }
         cmd if cmd.starts_with(output::Commands::Turn.to_string()) => { make_turn::<Output>(swarm, cmd, &mut user_session.game_session).await }
@@ -171,11 +159,6 @@ enum GameStatus {
     Turn(usize, usize),
 }
 
-enum EventType {
-    GameResponse(GameStatus),
-    Input(String),
-}
-
 #[derive(libp2p::NetworkBehaviour)]
 struct TicTacToeBehaviour {
     floodsub: libp2p::floodsub::Floodsub,
@@ -252,11 +235,11 @@ async fn list_peers<Output: output::PrintToOutput>(
 }
 
 fn resolve_spawned_messages<Output: output::PrintToOutput>(
-    game_status: GameStatus,
+    game_status: Option<GameStatus>,
     game_session: &mut GameSession,
     user_peer_id: &str,
 ) {
-    match game_status {
+    match game_status.expect("response exists") {
         GameStatus::Init(initiator_id) => {
             if initiator_id == user_peer_id {
                 print!("<{}>: ", initiator_id);
