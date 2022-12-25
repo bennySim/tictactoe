@@ -52,16 +52,16 @@ impl UserSession {
                     EventType::GameResponse(game_status) => resolve_spawned_messages::<Output>(game_status, &mut user_session.game_session, &user_session.user_peer_id.to_string()),
                     EventType::Input(line) => match line.as_str() {
                         cmd if cmd.starts_with(output::Commands::Help.to_string()) => Output::print_help(),
-                        cmd if cmd.starts_with(output::Commands::Peers.to_string())  => list_peers(&mut swarm).await,
+                        cmd if cmd.starts_with(output::Commands::Peers.to_string())  => list_peers::<Output>(&mut swarm).await,
                         cmd if cmd.starts_with(output::Commands::Turn.to_string())  => make_turn::<Output>(&mut swarm, cmd, &mut user_session.game_session).await, 
                         cmd if cmd.starts_with(output::Commands::Start.to_string()) => initiate_game(&mut swarm, cmd, &mut user_session.game_session).await,
                         cmd if cmd == "y" || cmd == "yes" => {
-                            send_answer(&mut swarm, &user_session.game_session, true);
-                            println!("Waiting for opponent turn.");
+                            send_answer::<Output>(&mut swarm, &user_session.game_session, true);
+                            Output::print_string("Waiting for opponent turn.");
                         }
-                        cmd if cmd == "n" || cmd == "no" => send_answer(&mut swarm, &user_session.game_session, false),
+                        cmd if cmd == "n" || cmd == "no" => send_answer::<Output>(&mut swarm, &user_session.game_session, false),
                         _ => {
-                            println!("Unknown command");
+                            Output::print_string("Unknown command");
                             Output::print_help();
                         }
                     },
@@ -146,9 +146,11 @@ struct Request {
 }
 
 type InitiatorId = String;
+
+#[derive(Debug)]
 enum GameStatus {
     Init(InitiatorId),
-    Start,
+    Start(bool),
     Turn(usize, usize),
 }
 
@@ -173,12 +175,7 @@ impl libp2p::swarm::NetworkBehaviourEventProcess<libp2p::floodsub::FloodsubEvent
             }
 
             if let Ok(resp) = serde_json::from_slice::<Answer>(&msg.data) {
-                if resp.accept {
-                    println!("yes");
-                    spawn_internally(self.response_sender.clone(), GameStatus::Start);
-                } else {
-                    println!("no");
-                }
+                spawn_internally(self.response_sender.clone(), GameStatus::Start(resp.accept));
             }
 
             if let Ok(opponent_turn) = serde_json::from_slice::<MyTurn>(&msg.data) {
@@ -190,9 +187,7 @@ impl libp2p::swarm::NetworkBehaviourEventProcess<libp2p::floodsub::FloodsubEvent
 
 fn spawn_internally(sender: mpsc::UnboundedSender<GameStatus>, game_status : GameStatus) {
     tokio::spawn(async move {
-        if sender.send(game_status).is_err() {
-            println!("Error while sending message");
-        }
+         sender.send(game_status).expect("Error while sending message");
     });
 }
 
@@ -221,39 +216,41 @@ async fn get_peers(swarm: &mut libp2p::swarm::Swarm<TicTacToeBehaviour>) -> Vec<
     nodes.into_iter().unique().collect()
 }
 
-async fn list_peers(swarm: &mut libp2p::swarm::Swarm<TicTacToeBehaviour>) {
+async fn list_peers<Output : output::PrintToOutput>(swarm: &mut libp2p::swarm::Swarm<TicTacToeBehaviour>) {
     let peers = get_peers(swarm).await;
-    println!("Discovered {} peers:", peers.len());
+    Output::print_string(format!("Discovered {} peers:", peers.len()).as_str());
 
     peers
     .iter()
     .enumerate()
-    .for_each(|(i, el)| println!("{}: {}", i, el));
+    .for_each(|(i, el)| Output::print_string(format!("{}: {}", i, el).as_str()));
 }
 
-fn resolve_spawned_messages<T : output::PrintToOutput>(game_status : GameStatus, game_session : &mut GameSession, user_peer_id : &str) {
+fn resolve_spawned_messages<Output : output::PrintToOutput>(game_status : GameStatus, game_session : &mut GameSession, user_peer_id : &str) {
     match game_status {
         GameStatus::Init(initiator_id) => {
             if initiator_id == user_peer_id {
                 print!("<{}>: ", initiator_id);
-                println!("Do you want to play TicTacToe with me? y[es] or n[o] ?");
+                Output::print_string("Do you want to play TicTacToe with me? y[es] or n[o] ?");
                 game_session.initiate(initiator_id, false);
             }
         },
-        GameStatus::Start => {
-            T::print_table(game_session.game.get_state());
-            println!("Make turn with command 'turn x y'");
+        GameStatus::Start(true) => {
+            Output::print_string("yes.");
+            Output::print_table(game_session.game.get_state());
+            Output::print_string("Make turn with command 'turn x y'");
         },
-        GameStatus::Turn(x, y) => resolve_opponent_turn::<T>(x, y, game_session),
+        GameStatus::Start(false) => Output::print_string("no!"),
+        GameStatus::Turn(x, y) => resolve_opponent_turn::<Output>(x, y, game_session),
        };
 }
 
-fn resolve_opponent_turn<T : output::PrintToOutput>(x : usize, y: usize, game_session : &mut GameSession) {
+fn resolve_opponent_turn<Output : output::PrintToOutput>(x : usize, y: usize, game_session : &mut GameSession) {
     game_session.make_opponent_turn(x, y);
-    T::print_table(game_session.game.get_state());
+    Output::print_table(game_session.game.get_state());
 
     if game_session.game.is_opponent_winner() {
-        println!("Game over, you lose!");
+        Output::print_string("Game over, you lose!");
         game_session.reset();
     }
 }
@@ -263,13 +260,13 @@ struct Answer {
     accept: bool,
 }
 
-fn send_answer(swarm: &mut libp2p::swarm::Swarm<TicTacToeBehaviour>, game_session : &GameSession, answer : bool) {
+fn send_answer<Output : output::PrintToOutput>(swarm: &mut libp2p::swarm::Swarm<TicTacToeBehaviour>, game_session : &GameSession, answer : bool) {
     if game_session.is_initiated() {
              let answer = Answer { accept: answer};
              let json = serde_json::to_string(&answer).expect("cannot jsonify request");
              swarm.behaviour_mut().floodsub.publish(game_session.topic.clone(), json.as_bytes());
     } else {
-     println!("Unknown command");
+     Output::print_string("Unknown command");
     }
  }
 
@@ -307,10 +304,10 @@ async fn make_turn<Output: output::PrintToOutput>(swarm: &mut libp2p::swarm::Swa
 
     match Output::process_coords(line) {
         Some((x, y)) => make_one_turn::<Output>(swarm, game_session, x, y).await,
-        None => println!("Play again!"),
+        None => Output::print_string("Play again!"),
     };
  } else {
-    println!("It is not your turn, waiting for opponent!");
+    Output::print_string("It is not your turn, waiting for opponent!");
  }
 }
 
