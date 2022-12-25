@@ -1,30 +1,23 @@
 pub mod output;
 pub mod tictactoe;
 
-use libp2p::{
-    floodsub::{Floodsub, FloodsubEvent, Topic},
-    futures::{StreamExt},
-    identity,
-    mdns::{Mdns, MdnsEvent},
-    swarm::{NetworkBehaviourEventProcess, Swarm, SwarmBuilder},
-    NetworkBehaviour, PeerId,
-};
+use libp2p::futures::StreamExt;
 
 use tokio::{io::AsyncBufReadExt, sync::mpsc::{self}};
 use itertools::Itertools;
 
 pub struct UserSession {
-    user_key : identity::Keypair,
-    user_peer_id : PeerId,
+    user_key : libp2p::identity::Keypair,
+    user_peer_id : libp2p::PeerId,
     game_session : GameSession,
 }
 
 impl UserSession {
     pub fn new() -> UserSession {
-        let key = identity::Keypair::generate_ed25519();
+        let key = libp2p::identity::Keypair::generate_ed25519();
         UserSession { 
             user_key: key.clone(),
-            user_peer_id: PeerId::from(key.public()),
+            user_peer_id: libp2p::PeerId::from(key.public()),
             game_session: GameSession::new(),
          }
     }
@@ -33,9 +26,9 @@ impl UserSession {
     pub async fn start<Output: output::PrintToOutput>() {
         let mut user_session = UserSession::new();
 
-        // TODO all in generic output class
         Output::print_string(format!("Your peer id: {:?}", user_session.user_peer_id).as_str());
         Output::print_help();
+
         let (response_sender, mut response_rcv) = mpsc::unbounded_channel();
         let mut swarm = init_swarm(&user_session, response_sender).await;
         let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
@@ -77,19 +70,19 @@ impl UserSession {
         }
     }
     
-async fn init_swarm(user_sess : &UserSession, response_sender : tokio::sync::mpsc::UnboundedSender<GameStatus>) -> Swarm<TicTacToeBehaviour> {
+async fn init_swarm(user_sess : &UserSession, response_sender : tokio::sync::mpsc::UnboundedSender<GameStatus>) -> libp2p::swarm::Swarm<TicTacToeBehaviour> {
     let transport = libp2p::development_transport(user_sess.user_key.clone()).await.expect("transport create failed");
     
         let mut behaviour = TicTacToeBehaviour {
-            floodsub: Floodsub::new(user_sess.user_peer_id),
-            mdns: Mdns::new(Default::default())
+            floodsub: libp2p::floodsub::Floodsub::new(user_sess.user_peer_id),
+            mdns: libp2p::mdns::Mdns::new(Default::default())
             .await
             .expect("can create mdns"),
             response_sender,
         };
     
     behaviour.floodsub.subscribe(user_sess.game_session.topic.clone());
-    let mut swarm = SwarmBuilder::new(transport, behaviour, user_sess.user_peer_id)
+    let mut swarm = libp2p::swarm::SwarmBuilder::new(transport, behaviour, user_sess.user_peer_id)
             .executor(Box::new(|fut| {
                 tokio::spawn(fut);
             }))
@@ -104,7 +97,7 @@ async fn init_swarm(user_sess : &UserSession, response_sender : tokio::sync::mps
 struct GameSession {
     opponent_id : String,
     game : tictactoe::TicTacToe, 
-    topic : Topic,
+    topic : libp2p::floodsub::Topic,
     your_turn : Option<bool>,
 }
 
@@ -113,7 +106,7 @@ impl GameSession {
         GameSession {
             opponent_id : String::new(),
             game : tictactoe::TicTacToe::new(),
-            topic: Topic::new("TicTacToe"),
+            topic: libp2p::floodsub::Topic::new("TicTacToe"),
             your_turn : None,
         }
     }
@@ -164,17 +157,17 @@ enum EventType {
     Input(String),
 }
 
-#[derive(NetworkBehaviour)]
+#[derive(libp2p::NetworkBehaviour)]
 struct TicTacToeBehaviour {
-    floodsub: Floodsub,
-    mdns: Mdns,
+    floodsub: libp2p::floodsub::Floodsub,
+    mdns: libp2p::mdns::Mdns,
     #[behaviour(ignore)]
     response_sender: mpsc::UnboundedSender<GameStatus>,
 }
 
-impl NetworkBehaviourEventProcess<FloodsubEvent> for TicTacToeBehaviour {
-    fn inject_event(&mut self, event: FloodsubEvent) {
-        if let FloodsubEvent::Message(msg) = event {
+impl libp2p::swarm::NetworkBehaviourEventProcess<libp2p::floodsub::FloodsubEvent> for TicTacToeBehaviour {
+    fn inject_event(&mut self, event: libp2p::floodsub::FloodsubEvent) {
+        if let libp2p::floodsub::FloodsubEvent::Message(msg) = event {
             if let Ok(resp) = serde_json::from_slice::<Request>(&msg.data) {
                spawn_internally(self.response_sender.clone(), GameStatus::Init(resp.sender));
             }
@@ -203,15 +196,15 @@ fn spawn_internally(sender: mpsc::UnboundedSender<GameStatus>, game_status : Gam
     });
 }
 
-impl NetworkBehaviourEventProcess<MdnsEvent> for TicTacToeBehaviour {
-    fn inject_event(&mut self, event: MdnsEvent) {
+impl libp2p::swarm::NetworkBehaviourEventProcess<libp2p::mdns::MdnsEvent> for TicTacToeBehaviour {
+    fn inject_event(&mut self, event: libp2p::mdns::MdnsEvent) {
         match event {
-            MdnsEvent::Discovered(discovered_list) => {
+            libp2p::mdns::MdnsEvent::Discovered(discovered_list) => {
                 for (peer, _addr) in discovered_list {
                     self.floodsub.add_node_to_partial_view(peer);
                 }
             }
-            MdnsEvent::Expired(expired_list) => {
+            libp2p::mdns::MdnsEvent::Expired(expired_list) => {
                 for (peer, _addr) in expired_list {
                     if !self.mdns.has_node(&peer) {
                         self.floodsub.remove_node_from_partial_view(&peer);
@@ -223,12 +216,12 @@ impl NetworkBehaviourEventProcess<MdnsEvent> for TicTacToeBehaviour {
 }
 
 
-async fn get_peers(swarm: &mut Swarm<TicTacToeBehaviour>) -> Vec<&PeerId> {
+async fn get_peers(swarm: &mut libp2p::swarm::Swarm<TicTacToeBehaviour>) -> Vec<&libp2p::PeerId> {
     let nodes = swarm.behaviour().mdns.discovered_nodes();
     nodes.into_iter().unique().collect()
 }
 
-async fn list_peers(swarm: &mut Swarm<TicTacToeBehaviour>) {
+async fn list_peers(swarm: &mut libp2p::swarm::Swarm<TicTacToeBehaviour>) {
     let peers = get_peers(swarm).await;
     println!("Discovered {} peers:", peers.len());
 
@@ -270,7 +263,7 @@ struct Answer {
     accept: bool,
 }
 
-fn send_answer(swarm: &mut Swarm<TicTacToeBehaviour>, game_session : &GameSession, answer : bool) {
+fn send_answer(swarm: &mut libp2p::swarm::Swarm<TicTacToeBehaviour>, game_session : &GameSession, answer : bool) {
     if game_session.is_initiated() {
              let answer = Answer { accept: answer};
              let json = serde_json::to_string(&answer).expect("cannot jsonify request");
@@ -281,7 +274,7 @@ fn send_answer(swarm: &mut Swarm<TicTacToeBehaviour>, game_session : &GameSessio
  }
 
 
-async fn initiate_game(swarm: &mut Swarm<TicTacToeBehaviour>, line: &str, game_session : &mut GameSession) {
+async fn initiate_game(swarm: &mut libp2p::swarm::Swarm<TicTacToeBehaviour>, line: &str, game_session : &mut GameSession) {
     let rest = line.strip_prefix("start ");
     match rest { // TODO better recognition (strip white...)
         Some("any") => {
@@ -309,7 +302,7 @@ struct MyTurn {
     y: usize,
 }
 
-async fn make_turn<Output: output::PrintToOutput>(swarm: &mut Swarm<TicTacToeBehaviour>, line: &str, game_session : &mut GameSession) {
+async fn make_turn<Output: output::PrintToOutput>(swarm: &mut libp2p::swarm::Swarm<TicTacToeBehaviour>, line: &str, game_session : &mut GameSession) {
     if game_session.is_your_turn() {
 
     match Output::process_coords(line) {
@@ -321,7 +314,7 @@ async fn make_turn<Output: output::PrintToOutput>(swarm: &mut Swarm<TicTacToeBeh
  }
 }
 
-async fn make_one_turn<Output : output::PrintToOutput>(swarm: &mut Swarm<TicTacToeBehaviour>, game_session : &mut GameSession, x: usize, y: usize) {
+async fn make_one_turn<Output : output::PrintToOutput>(swarm: &mut libp2p::swarm::Swarm<TicTacToeBehaviour>, game_session : &mut GameSession, x: usize, y: usize) {
     match game_session.make_my_turn(x, y) {
     
         Ok(()) => {
