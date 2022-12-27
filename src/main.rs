@@ -5,5 +5,6 @@ pub mod network_communication;
 
 #[tokio::main]
 async fn main() {
-    network_communication::start::<network_communication::output::PrintToOutputStdio>().await;
+    let mut input = network_communication::input::Stdio::new();
+    network_communication::start::<network_communication::input::Stdio>(&mut input).await;
 }

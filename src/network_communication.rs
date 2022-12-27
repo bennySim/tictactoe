@@ -1,4 +1,4 @@
-pub mod output;
+pub mod input;
 pub mod tictactoe;
 
 use libp2p::futures::StreamExt;
@@ -26,42 +26,60 @@ impl UserSession {
     }
 }
 
-pub async fn start<Output: output::PrintToOutput>() {
+pub enum OutputEvents {
+    ListPeers(Vec<String>),
+    GameProposal(String),
+    StartTrue([[char; 3]; 3]),
+    StartFalse,
+    TurnResolved([[char; 3]; 3]),
+    GameOver,
+}
+
+pub async fn start<UserInt: input::Input<self::Input, self::OutputEvents>>(user__interface : &mut UserInt) {
+
     let mut user_session = UserSession::new();
 
-    Output::print_string(format!("Your peer id: {:?}", user_session.user_peer_id).as_str());
-    Output::print_help();
+    //Output::print_string(format!("Your peer id: {:?}", user_session.user_peer_id).as_str());
+   // Output::print_help();
 
     let (response_sender, mut response_rcv) = mpsc::unbounded_channel();
     let mut swarm = init_swarm(&user_session, response_sender).await;
-    let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
-
     loop {
         tokio::select! {
             // command line message
-            line = stdin.next_line() => process_intput::<Output>(line, &mut swarm, &mut user_session).await,
+            input = user__interface.get_input() => process_input::<UserInt>(input, &mut swarm, &mut user_session, user__interface).await,
             // spawned message from internal process
-            response = response_rcv.recv() => resolve_spawned_messages::<Output>(response, &mut user_session.game_session, &user_session.user_peer_id.to_string()),
+            response = response_rcv.recv() => resolve_spawned_messages::<UserInt>(user__interface, response, &mut user_session.game_session, &user_session.user_peer_id.to_string()),
             _ = swarm.select_next_some() => {},
         };
     }
 }
+pub type Coordinates = (usize, usize);
 
-async fn process_intput<Output : output::PrintToOutput>(line: tokio::io::Result<Option<String>>, swarm : &mut libp2p::swarm::Swarm<TicTacToeBehaviour>, user_session : &mut UserSession) {
-    let line = line.expect("can get line").expect("can read line from stdin");
-    match line.as_str() {
-        cmd if cmd.starts_with(output::Commands::Help.to_string()) => { Output::print_help() }
-        cmd if cmd.starts_with(output::Commands::Peers.to_string()) => { list_peers::<Output>(swarm).await }
-        cmd if cmd.starts_with(output::Commands::Turn.to_string()) => { make_turn::<Output>(swarm, cmd, &mut user_session.game_session).await }
-        cmd if cmd.starts_with(output::Commands::Start.to_string()) => { initiate_game(swarm, cmd, &mut user_session.game_session).await }
-        cmd if cmd == "y" || cmd == "yes" => {
-            send_answer::<Output>(swarm, &user_session.game_session, true);
-            Output::print_string("Waiting for opponent turn.");
+pub enum CoordinatesError {
+    InvalidFormat,
+    InvalidValue,
+}
+
+pub enum Input {
+    ListPeers,
+    Turn(usize, usize),
+    InitiateGame(String),
+    Yes,
+    No,
+}
+
+async fn process_input<UserInt: input::Input<self::Input, self::OutputEvents>>(input: Option<self::Input>, swarm : &mut libp2p::swarm::Swarm<TicTacToeBehaviour>, user_session : &mut UserSession
+, user_interface : &mut UserInt) {
+    match input {
+        Some(Input::ListPeers) => { list_peers::<UserInt>(swarm, user_interface).await }
+        Some(Input::Turn(x, y)) => { make_turn::<UserInt>(swarm, x, y, &mut user_session.game_session).await }
+        Some(Input::InitiateGame(peer_id)) => { initiate_game(swarm, peer_id, &mut user_session.game_session).await }
+        Some(Input::Yes) => {
+            send_answer::<UserInt>(swarm, &user_session.game_session, true);
         }
-        cmd if cmd == "n" || cmd == "no" => { send_answer::<Output>(swarm, &user_session.game_session, false) }
+        Some(Input::No) => { send_answer::<UserInt>(swarm, &user_session.game_session, false) }
         _ => {
-            Output::print_string("Unknown command");
-            Output::print_help();
         }
     }
 }
@@ -222,19 +240,22 @@ async fn get_peers(swarm: &mut libp2p::swarm::Swarm<TicTacToeBehaviour>) -> Vec<
     nodes.into_iter().unique().collect()
 }
 
-async fn list_peers<Output: output::PrintToOutput>(
+async fn list_peers<Output: input::Input<Input, OutputEvents>>(
     swarm: &mut libp2p::swarm::Swarm<TicTacToeBehaviour>,
+    user_interface : &mut Output,
 ) {
-    let peers = get_peers(swarm).await;
-    Output::print_string(format!("Discovered {} peers:", peers.len()).as_str());
+    let peers = get_peers(swarm).await.iter().map(|peerId| peerId.to_string()).collect_vec();
+    user_interface.print_to_output(OutputEvents::ListPeers(peers));
+    //Output::print_string(format!("Discovered {} peers:", peers.len()).as_str());
 
-    peers
-        .iter()
-        .enumerate()
-        .for_each(|(i, el)| Output::print_string(format!("{}: {}", i, el).as_str()));
+    //peers
+      //  .iter()
+      //  .enumerate()
+      //  .for_each(|(i, el)| Output::print_string(format!("{}: {}", i, el).as_str()));
 }
 
-fn resolve_spawned_messages<Output: output::PrintToOutput>(
+fn resolve_spawned_messages<Output: input::Input<Input, OutputEvents>>(
+    user_interface : &mut Output,
     game_status: Option<GameStatus>,
     game_session: &mut GameSession,
     user_peer_id: &str,
@@ -242,31 +263,28 @@ fn resolve_spawned_messages<Output: output::PrintToOutput>(
     match game_status.expect("response exists") {
         GameStatus::Init(initiator_id) => {
             if initiator_id == user_peer_id {
-                print!("<{}>: ", initiator_id);
-                Output::print_string("Do you want to play TicTacToe with me? y[es] or n[o] ?");
+                user_interface.print_to_output(OutputEvents::GameProposal(user_peer_id.to_string()));
                 game_session.initiate(initiator_id, false);
             }
         }
-        GameStatus::Start(true) => {
-            Output::print_string("yes.");
-            Output::print_table(game_session.game.get_state());
-            Output::print_string("Make turn with command 'turn x y'");
-        }
-        GameStatus::Start(false) => Output::print_string("no!"),
-        GameStatus::Turn(x, y) => resolve_opponent_turn::<Output>(x, y, game_session),
+        GameStatus::Start(true) => 
+            user_interface.print_to_output(OutputEvents::StartTrue(game_session.game.get_state())),
+        GameStatus::Start(false) => user_interface.print_to_output(OutputEvents::StartFalse),
+        GameStatus::Turn(x, y) => resolve_opponent_turn::<Output>(x, y, game_session, user_interface),
     };
 }
 
-fn resolve_opponent_turn<Output: output::PrintToOutput>(
+fn resolve_opponent_turn<Output: input::Input<Input, OutputEvents>>(
     x: usize,
     y: usize,
     game_session: &mut GameSession,
+    user_interface : &mut Output
 ) {
     game_session.make_opponent_turn(x, y);
-    Output::print_table(game_session.game.get_state());
+    user_interface.print_to_output(OutputEvents::TurnResolved(game_session.game.get_state()));
 
     if game_session.game.is_opponent_winner() {
-        Output::print_string("Game over, you lose!");
+        user_interface.print_to_output(OutputEvents::GameOver);
         game_session.reset();
     }
 }
@@ -276,7 +294,7 @@ struct Answer {
     accept: bool,
 }
 
-fn send_answer<Output: output::PrintToOutput>(
+fn send_answer<Output: input::Input<Input, OutputEvents>>(
     swarm: &mut libp2p::swarm::Swarm<TicTacToeBehaviour>,
     game_session: &GameSession,
     answer: bool,
@@ -289,23 +307,17 @@ fn send_answer<Output: output::PrintToOutput>(
             .floodsub
             .publish(game_session.topic.clone(), json.as_bytes());
     } else {
-        Output::print_string("Unknown command");
+        //Output::print_string("Unknown command");
     }
 }
 
 async fn initiate_game(
     swarm: &mut libp2p::swarm::Swarm<TicTacToeBehaviour>,
-    line: &str,
+    peerId: String,
     game_session: &mut GameSession,
 ) {
-    let rest = line.strip_prefix("start ");
-    match rest {
-        // TODO better recognition (strip white...)
-        Some("any") => {
-            // TODO fill and add as default
-        }
-        Some(peer_index) => {
-            let index: usize = peer_index.parse().unwrap(); // TODO handle errors
+
+            let index: usize = peerId.parse().unwrap(); // TODO handle errors
             let peers = get_peers(swarm).await;
             let receiver_peer_id = peers[index].to_string();
             let req = Request {
@@ -317,10 +329,7 @@ async fn initiate_game(
                 .behaviour_mut()
                 .floodsub
                 .publish(game_session.topic.clone(), json.as_bytes());
-        }
-        None => { // TODO invalid input
-        }
-    }
+       
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -329,22 +338,20 @@ struct MyTurn {
     y: usize,
 }
 
-async fn make_turn<Output: output::PrintToOutput>(
+async fn make_turn<Output: input::Input<Input, OutputEvents>>(
     swarm: &mut libp2p::swarm::Swarm<TicTacToeBehaviour>,
-    line: &str,
+    x : usize,
+    y : usize,
     game_session: &mut GameSession,
 ) {
     if game_session.is_your_turn() {
-        match Output::process_coords(line) {
-            Some((x, y)) => make_one_turn::<Output>(swarm, game_session, x, y).await,
-            None => Output::print_string("Play again!"),
-        };
+        make_one_turn::<Output>(swarm, game_session, x, y).await;
     } else {
-        Output::print_string("It is not your turn, waiting for opponent!");
+        //Output::print_string("It is not your turn, waiting for opponent!");
     }
 }
 
-async fn make_one_turn<Output: output::PrintToOutput>(
+async fn make_one_turn<Output: input::Input<Input, OutputEvents>>(
     swarm: &mut libp2p::swarm::Swarm<TicTacToeBehaviour>,
     game_session: &mut GameSession,
     x: usize,
@@ -352,13 +359,13 @@ async fn make_one_turn<Output: output::PrintToOutput>(
 ) {
     match game_session.make_my_turn(x, y) {
         Ok(()) => {
-            Output::print_table(game_session.game.get_state());
+            //Output::print_table(game_session.game.get_state());
 
             if game_session.game.am_i_winner() {
-                Output::print_string("Congrats, you win!");
+               // Output::print_string("Congrats, you win!");
                 game_session.reset();
             } else {
-                Output::print_string("Waiting for opponent turn");
+              //  Output::print_string("Waiting for opponent turn");
             }
 
             let turn = MyTurn { x, y };
@@ -370,10 +377,10 @@ async fn make_one_turn<Output: output::PrintToOutput>(
         }
 
         Err(tictactoe::GameError::OccupiedField) => {
-            Output::print_string("Field is already occupied, choose different one!")
+            //Output::print_string("Field is already occupied, choose different one!")
         }
         Err(tictactoe::GameError::InvalidValue) => {
-            Output::print_string("Invalid coordinates, use values in format 'turn <A|B|C> <1|2|3>'")
+            //Output::print_string("Invalid coordinates, use values in format 'turn <A|B|C> <1|2|3>'")
         }
     }
 }
