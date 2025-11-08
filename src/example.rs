@@ -3,5 +3,5 @@ fn josef() {
 }
 
 fn test() {
-
+    println!("Hi!");
 }

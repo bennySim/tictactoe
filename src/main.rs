@@ -4,6 +4,10 @@ extern crate quickcheck;
 pub mod network_communication;
 pub mod example;
 
+fn simona() {
+    println!("Hi!");
+}
+
 #[tokio::main]
 async fn main() {
     let mut input = network_communication::input::Stdio::new();
