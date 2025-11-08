@@ -2,6 +2,7 @@
 extern crate quickcheck;
 
 pub mod network_communication;
+pub mod example;
 
 #[tokio::main]
 async fn main() {
